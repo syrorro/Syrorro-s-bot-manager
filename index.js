@@ -33,6 +33,7 @@ const client = new Client({
 
 const SERVER_ID = "948681259889094766";
 const ADMIN_ROOM_ID = "948684753140326461";
+const CHAT_MODERATOR_ROLE_ID = "974148626299383838";
 
 const RANK_III_ROLE_ID = "973666576727433276";
 const GOVERNMENT_INVESTORS_ROLE_ID = "949331181911023666";
@@ -1474,10 +1475,6 @@ const commands = [
         BANISHMENT_CHOICES
     )
 
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageRoles
-        )
-
         .toJSON(),
 
     addCommonRemoveOptions(
@@ -1494,10 +1491,6 @@ const commands = [
 
         BANISHMENT_CHOICES
     )
-
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageRoles
-        )
 
         .toJSON(),
 
@@ -1516,10 +1509,6 @@ const commands = [
         BLACKLIST_CHOICES
     )
 
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageRoles
-        )
-
         .toJSON(),
 
     addCommonRemoveOptions(
@@ -1536,10 +1525,6 @@ const commands = [
 
         BLACKLIST_CHOICES
     )
-
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageRoles
-        )
 
         .toJSON()
 ];
@@ -2939,29 +2924,50 @@ client.on(
             return;
         }
 
-        // ========================================
-        // MODERATOR PERMISSION
-        // ========================================
+      
+// ========================================
+// MODERATOR PERMISSION
+// ========================================
 
-        if (
-            !interaction
-                .memberPermissions
-                ?.has(
-                    PermissionFlagsBits.ManageRoles
-                )
-        ) {
+// Allowed if the user:
+// 1. Has Discord's Manage Roles permission
+// OR
+// 2. Has the Chat Moderator role.
 
-            await interaction.reply({
+const hasManageRoles =
+    interaction
+        .memberPermissions
+        ?.has(
+            PermissionFlagsBits.ManageRoles
+        )
+    ?? false;
 
-                content:
-                    "❌ You do not have permission to use this command.",
+const isChatModerator =
+    interaction
+        .member
+        ?.roles
+        ?.cache
+        ?.has(
+            CHAT_MODERATOR_ROLE_ID
+        )
+    ?? false;
 
-                flags:
-                    MessageFlags.Ephemeral
-            });
+if (
+    !hasManageRoles &&
+    !isChatModerator
+) {
 
-            return;
-        }
+    await interaction.reply({
+
+        content:
+            "❌ You do not have permission to use this command.",
+
+        flags:
+            MessageFlags.Ephemeral
+    });
+
+    return;
+}
 
         // ========================================
         // OPTIONS
@@ -4284,6 +4290,10 @@ client.once(
             console.log(
                 "✓ /unblacklist registered"
             );
+
+	console.log(
+   	 `✓ Chat Moderator commands enabled for role ${CHAT_MODERATOR_ROLE_ID}`
+	);
 
         }
 
