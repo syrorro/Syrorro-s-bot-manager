@@ -141,8 +141,6 @@ function makeEmptyStore() {
 
 function migrateLegacyStore(data) {
 
-    // Already using new format.
-
     if (
         data &&
         data.version === 2 &&
@@ -152,15 +150,6 @@ function migrateLegacyStore(data) {
 
         return data;
     }
-
-    // Old format:
-    //
-    // {
-    //     "USER_ID": {
-    //         "image": true,
-    //         "embed": false
-    //     }
-    // }
 
     const migrated =
         makeEmptyStore();
@@ -285,7 +274,6 @@ function loadPunishmentStore() {
         return migrateLegacyStore(
             JSON.parse(raw)
         );
-
     }
 
     catch (error) {
@@ -325,7 +313,6 @@ function savePunishmentStore() {
 
             "utf8"
         );
-
     }
 
     catch (error) {
@@ -405,28 +392,13 @@ function cleanUserStore(
     }
 }
 
-function setStoredPunishment(
-    userId,
+function buildStoredPunishmentRecord(
     key,
+    previous = {},
     metadata = {}
 ) {
 
-    if (!PUNISHMENTS[key]) {
-        return;
-    }
-
-    const entry =
-        getUserPunishments(
-            userId,
-            true
-        );
-
-    // Preserve public-message information if this
-    // punishment record gets updated later.
-    const previous =
-        entry.punishments[key] || {};
-
-    entry.punishments[key] = {
+    return {
 
         expiresAt:
             metadata.expiresAt ??
@@ -465,8 +437,74 @@ function setStoredPunishment(
         publicExpiredDescription:
             metadata.publicExpiredDescription ??
             previous.publicExpiredDescription ??
-            null
+            null,
+
+        // Multi-role commands such as Full Blacklist
+        // share one batch. This lets expiry/logging treat
+        // the whole command as one moderation action.
+        batchId:
+            metadata.batchId ??
+            previous.batchId ??
+            null,
+
+        batchLabel:
+            metadata.batchLabel ??
+            previous.batchLabel ??
+            null,
+
+        batchKeys:
+            Array.isArray(
+                metadata.batchKeys
+            )
+                ? [
+                    ...metadata.batchKeys
+                ]
+                : (
+                    Array.isArray(
+                        previous.batchKeys
+                    )
+                        ? [
+                            ...previous.batchKeys
+                        ]
+                        : [
+                            key
+                        ]
+                )
     };
+}
+
+function setStoredPunishment(
+    userId,
+    key,
+    metadata = {}
+) {
+
+    if (
+        !PUNISHMENTS[key]
+    ) {
+
+        return;
+    }
+
+    const entry =
+        getUserPunishments(
+            userId,
+            true
+        );
+
+    const previous =
+        entry.punishments[
+            key
+        ] || {};
+
+    entry.punishments[
+        key
+    ] =
+        buildStoredPunishmentRecord(
+            key,
+            previous,
+            metadata
+        );
 
     savePunishmentStore();
 
@@ -482,9 +520,74 @@ function setStoredPunishment(
     );
 }
 
-function deleteStoredPunishment(
+function setStoredPunishments(
     userId,
-    key
+    keys,
+    metadata = {}
+) {
+
+    const entry =
+        getUserPunishments(
+            userId,
+            true
+        );
+
+    const savedKeys =
+        [];
+
+    for (
+        const key
+        of keys
+    ) {
+
+        if (
+            !PUNISHMENTS[key]
+        ) {
+
+            continue;
+        }
+
+        const previous =
+            entry.punishments[
+                key
+            ] || {};
+
+        entry.punishments[
+            key
+        ] =
+            buildStoredPunishmentRecord(
+                key,
+                previous,
+                metadata
+            );
+
+        savedKeys.push(
+            key
+        );
+    }
+
+    if (
+        savedKeys.length ===
+        0
+    ) {
+
+        return false;
+    }
+
+    savePunishmentStore();
+
+    console.log(
+        `[PERSISTENCE BATCH SAVE] ${userId} | ` +
+        `${savedKeys.join(", ")} | ` +
+        `Expires: ${metadata.expiresAt ?? "never"}`
+    );
+
+    return true;
+}
+
+function deleteStoredPunishments(
+    userId,
+    keys
 ) {
 
     const entry =
@@ -494,15 +597,45 @@ function deleteStoredPunishment(
         );
 
     if (
-        !entry?.punishments?.[key]
+        !entry?.punishments
     ) {
 
         return false;
     }
 
-    delete entry.punishments[
-        key
-    ];
+    const removedKeys =
+        [];
+
+    for (
+        const key
+        of keys
+    ) {
+
+        if (
+            !entry.punishments[
+                key
+            ]
+        ) {
+
+            continue;
+        }
+
+        delete entry.punishments[
+            key
+        ];
+
+        removedKeys.push(
+            key
+        );
+    }
+
+    if (
+        removedKeys.length ===
+        0
+    ) {
+
+        return false;
+    }
 
     cleanUserStore(
         userId
@@ -511,10 +644,24 @@ function deleteStoredPunishment(
     savePunishmentStore();
 
     console.log(
-        `[PERSISTENCE CLEAR] ${userId} | ${key}`
+        `[PERSISTENCE BATCH CLEAR] ${userId} | ` +
+        `${removedKeys.join(", ")}`
     );
 
     return true;
+}
+
+function deleteStoredPunishment(
+    userId,
+    key
+) {
+
+    return deleteStoredPunishments(
+        userId,
+        [
+            key
+        ]
+    );
 }
 
 function getStoredPunishment(
@@ -627,6 +774,7 @@ function attachPublicMessageToPunishments(
         );
     }
 }
+
 // ========================================
 // CHANGE ORIGINAL MESSAGE TO EXPIRED
 // ========================================
@@ -720,7 +868,6 @@ async function markPublicMessageExpired(
         );
 
         return true;
-
     }
 
     catch (error) {
@@ -736,6 +883,7 @@ async function markPublicMessageExpired(
         return false;
     }
 }
+
 // ========================================
 // SNAPSHOT PUNISHMENT ROLES
 // ========================================
@@ -1184,9 +1332,6 @@ function formatExpiry(
 
         return "Permanent";
     }
-
-    // Stops Discord displaying:
-    // "5 minutes ago", "2 hours ago", etc.
 
     if (
         expiresAt <=
@@ -1917,6 +2062,7 @@ async function sendAdminLog({
     dmStatus,
     expiresAt,
     showLength = true,
+    roles = null,
     extra = null
 
 }) {
@@ -1981,20 +2127,50 @@ async function sendAdminLog({
 
                 inline:
                     true
-            },
+            }
+        ];
 
-            {
+        if (
+            Array.isArray(
+                roles
+            )
+            &&
+            roles.length >
+            0
+        ) {
+
+            fields.push({
+
                 name:
-                    "Reason",
+                    "Roles",
 
                 value:
-                    reason ||
-                    "No reason provided.",
+                    roles
+                        .join(
+                            "\n"
+                        )
+                        .slice(
+                            0,
+                            1024
+                        ),
 
                 inline:
                     false
-            }
-        ];
+            });
+        }
+
+        fields.push({
+
+            name:
+                "Reason",
+
+            value:
+                reason ||
+                "No reason provided.",
+
+            inline:
+                false
+        });
 
         if (
             showLength
@@ -2068,7 +2244,6 @@ async function sendAdminLog({
                 parse: []
             }
         });
-
     }
 
     catch (error) {
@@ -2181,6 +2356,53 @@ async function sendExpiryDM(
     );
 }
 
+async function sendGroupedExpiryDM(
+    user,
+    guildName,
+    typeName,
+    category
+) {
+
+    const normalizedName =
+        typeName
+            .toLowerCase();
+
+    let suffix =
+        "";
+
+    if (
+        category ===
+        "banishment"
+        &&
+        !normalizedName.includes(
+            "banishment"
+        )
+    ) {
+
+        suffix =
+            " banishment";
+    }
+
+    else if (
+        category ===
+        "blacklist"
+        &&
+        !normalizedName.includes(
+            "blacklist"
+        )
+    ) {
+
+        suffix =
+            " blacklist";
+    }
+
+    await user.send(
+
+        `Your **${typeName}**${suffix} in **${guildName}** ` +
+        `has expired and was automatically removed.`
+    );
+}
+
 // ========================================
 // PUBLIC COMMAND RESPONSE
 // ========================================
@@ -2225,11 +2447,6 @@ async function sendPublicResult(
                 description
             );
 
-    // IMPORTANT:
-    // This is now a NORMAL bot message.
-    // That means it can be edited later,
-    // even after the interaction expires.
-
     const channel =
         interaction.channel;
 
@@ -2266,7 +2483,9 @@ async function sendPublicResult(
         message,
         expiredDescription
     };
-}// ========================================
+}
+
+// ========================================
 // ROLE CHANGE SUPPRESSION
 // ========================================
 
@@ -2282,19 +2501,34 @@ function suppressRoleChanges(
         Date.now() +
         10000;
 
-    suppressedRoleChanges.set(
+    let roleMap =
+        suppressedRoleChanges.get(
+            userId
+        );
 
-        userId,
+    if (
+        !roleMap
+    ) {
 
-        {
-            roleIds:
-                new Set(
-                    roleIds
-                ),
+        roleMap =
+            new Map();
 
+        suppressedRoleChanges.set(
+            userId,
+            roleMap
+        );
+    }
+
+    for (
+        const roleId
+        of roleIds
+    ) {
+
+        roleMap.set(
+            roleId,
             expires
-        }
-    );
+        );
+    }
 }
 
 function isRoleChangeSuppressed(
@@ -2302,21 +2536,43 @@ function isRoleChangeSuppressed(
     roleId
 ) {
 
-    const entry =
+    const roleMap =
         suppressedRoleChanges.get(
             userId
         );
 
     if (
-        !entry
+        !roleMap
     ) {
 
         return false;
     }
 
+    const now =
+        Date.now();
+
+    for (
+        const [
+            storedRoleId,
+            expires
+        ]
+        of roleMap
+    ) {
+
+        if (
+            expires <
+            now
+        ) {
+
+            roleMap.delete(
+                storedRoleId
+            );
+        }
+    }
+
     if (
-        entry.expires <
-        Date.now()
+        roleMap.size ===
+        0
     ) {
 
         suppressedRoleChanges.delete(
@@ -2326,9 +2582,33 @@ function isRoleChangeSuppressed(
         return false;
     }
 
-    return entry.roleIds.has(
-        roleId
-    );
+    const suppressed =
+        roleMap.has(
+            roleId
+        );
+
+    // Consume suppression once the expected
+    // GuildMemberUpdate actually arrives.
+    if (
+        suppressed
+    ) {
+
+        roleMap.delete(
+            roleId
+        );
+
+        if (
+            roleMap.size ===
+            0
+        ) {
+
+            suppressedRoleChanges.delete(
+                userId
+            );
+        }
+    }
+
+    return suppressed;
 }
 
 // ========================================
@@ -2368,9 +2648,8 @@ client.on(
             return;
         }
 
-        // ========================================
-        // TRACK ALL PERSISTENT PUNISHMENT ROLES
-        // ========================================
+        const externalChanges =
+            [];
 
         for (
             const key
@@ -2403,12 +2682,22 @@ client.on(
                 continue;
             }
 
+            const suppressed =
+                isRoleChangeSuppressed(
+                    newMember.id,
+                    roleId
+                );
+
+            if (
+                suppressed
+            ) {
+
+                continue;
+            }
+
             if (
                 hasRole
             ) {
-
-                // Do not overwrite an existing
-                // timed command record.
 
                 if (
                     !getStoredPunishment(
@@ -2440,7 +2729,6 @@ client.on(
                         }
                     );
                 }
-
             }
 
             else {
@@ -2451,45 +2739,138 @@ client.on(
                 );
             }
 
+            externalChanges.push({
+
+                key,
+                punishment,
+                hasRole
+            });
+        }
+
+        // All punishment roles changed inside the same
+        // GuildMemberUpdate are represented by one log.
+        if (
+            externalChanges.length >
+            0
+        ) {
+
+            const added =
+                externalChanges.filter(
+                    change =>
+                        change.hasRole
+                );
+
+            const removed =
+                externalChanges.filter(
+                    change =>
+                        !change.hasRole
+                );
+
+            const categories =
+                new Set(
+                    externalChanges.map(
+                        change =>
+                            change
+                                .punishment
+                                .category
+                    )
+                );
+
+            let title =
+                "Punishment Roles Changed";
+
             if (
-                !isRoleChangeSuppressed(
-                    newMember.id,
-                    roleId
-                )
+                removed.length ===
+                0
             ) {
 
-                await sendAdminLog({
+                title =
+                    categories.size ===
+                    1
 
-                    title:
+                        ? (
+                            `${
+                                added[0]
+                                    .punishment
+                                    .category ===
+                                "banishment"
 
-                        hasRole
+                                    ? "Banishment"
+                                    : "Blacklist"
+                            } Applied`
+                        )
 
-                            ? `${punishment.label} Applied`
-
-                            : `${punishment.label} Removed`,
-
-                    user:
-                        newMember.user,
-
-                    typeName:
-                        punishment.label,
-
-                    moderator:
-                        null,
-
-                    reason:
-                        "Role changed manually or by another integration; no command reason was available.",
-
-                    dmStatus:
-                        "Not sent",
-
-                    expiresAt:
-                        null,
-
-                    extra:
-                        "This change was detected from the member's role update."
-                });
+                        : "Punishment Roles Applied";
             }
+
+            else if (
+                added.length ===
+                0
+            ) {
+
+                title =
+                    categories.size ===
+                    1
+
+                        ? (
+                            `${
+                                removed[0]
+                                    .punishment
+                                    .category ===
+                                "banishment"
+
+                                    ? "Banishment"
+                                    : "Blacklist"
+                            } Removed`
+                        )
+
+                        : "Punishment Roles Removed";
+            }
+
+            await sendAdminLog({
+
+                title,
+
+                user:
+                    newMember.user,
+
+                typeName:
+                    externalChanges.length ===
+                    1
+
+                        ? externalChanges[0]
+                            .punishment
+                            .label
+
+                        : "Multiple Punishment Roles",
+
+                moderator:
+                    null,
+
+                reason:
+                    "Role changed manually or by another integration; no command reason was available.",
+
+                dmStatus:
+                    "Not sent",
+
+                expiresAt:
+                    null,
+
+                roles:
+                    externalChanges.map(
+                        change =>
+                            `${
+                                change.hasRole
+                                    ? "➕"
+                                    : "➖"
+                            } ` +
+                            `${change.punishment.label} ` +
+                            `(<@&${change.punishment.roleId}>)`
+                    ),
+
+                extra:
+                    "These changes were detected from the same member role update."
+            });
         }
 
         // ========================================
@@ -2687,6 +3068,9 @@ client.on(
             const roleIdsToRestore =
                 [];
 
+            const expiredItems =
+                [];
+
             for (
                 const [key, record]
                 of Object.entries(
@@ -2712,22 +3096,70 @@ client.on(
                     now
                 ) {
 
-                    // Do not restore an already-expired role.
-
-                    await markPublicMessageExpired(
-                        record
-                    );
-
-                    deleteStoredPunishment(
-                        member.id,
-                        key
-                    );
+                    expiredItems.push({
+                        key,
+                        record,
+                        punishment
+                    });
 
                     continue;
                 }
 
                 roleIdsToRestore.push(
                     punishment.roleId
+                );
+            }
+
+            const expiredGroups =
+                new Map();
+
+            for (
+                const item
+                of expiredItems
+            ) {
+
+                const groupId =
+                    getExpiryGroupId(
+                        item.key,
+                        item.record
+                    );
+
+                if (
+                    !expiredGroups.has(
+                        groupId
+                    )
+                ) {
+
+                    expiredGroups.set(
+                        groupId,
+                        []
+                    );
+                }
+
+                expiredGroups
+                    .get(
+                        groupId
+                    )
+                    .push(
+                        item
+                    );
+            }
+
+            for (
+                const items
+                of expiredGroups.values()
+            ) {
+
+                await markPublicMessageExpired(
+                    items[0].record
+                );
+
+                deleteStoredPunishments(
+                    member.id,
+                    items.map(
+                        item =>
+                            item.key
+                    )
                 );
             }
 
@@ -2770,7 +3202,6 @@ client.on(
             await syncPermissions(
                 refreshedMember
             );
-
         }
 
         catch (error) {
@@ -2924,50 +3355,44 @@ client.on(
             return;
         }
 
-      
-// ========================================
-// MODERATOR PERMISSION
-// ========================================
+        // ========================================
+        // MODERATOR PERMISSION
+        // ========================================
 
-// Allowed if the user:
-// 1. Has Discord's Manage Roles permission
-// OR
-// 2. Has the Chat Moderator role.
+        const hasManageRoles =
+            interaction
+                .memberPermissions
+                ?.has(
+                    PermissionFlagsBits.ManageRoles
+                )
+            ?? false;
 
-const hasManageRoles =
-    interaction
-        .memberPermissions
-        ?.has(
-            PermissionFlagsBits.ManageRoles
-        )
-    ?? false;
+        const isChatModerator =
+            interaction
+                .member
+                ?.roles
+                ?.cache
+                ?.has(
+                    CHAT_MODERATOR_ROLE_ID
+                )
+            ?? false;
 
-const isChatModerator =
-    interaction
-        .member
-        ?.roles
-        ?.cache
-        ?.has(
-            CHAT_MODERATOR_ROLE_ID
-        )
-    ?? false;
+        if (
+            !hasManageRoles &&
+            !isChatModerator
+        ) {
 
-if (
-    !hasManageRoles &&
-    !isChatModerator
-) {
+            await interaction.reply({
 
-    await interaction.reply({
+                content:
+                    "❌ You do not have permission to use this command.",
 
-        content:
-            "❌ You do not have permission to use this command.",
+                flags:
+                    MessageFlags.Ephemeral
+            });
 
-        flags:
-            MessageFlags.Ephemeral
-    });
-
-    return;
-}
+            return;
+        }
 
         // ========================================
         // OPTIONS
@@ -3178,9 +3603,9 @@ if (
                 : null;
 
         await interaction.deferReply({
-    flags:
-        MessageFlags.Ephemeral
-});
+            flags:
+                MessageFlags.Ephemeral
+        });
 
         try {
 
@@ -3319,38 +3744,40 @@ if (
                     );
                 }
 
-                // Save/reset metadata for every
-                // selected punishment.
+                // Save/reset all selected punishment records
+                // as one command batch.
+                setStoredPunishments(
 
-                for (
-                    const key
-                    of keys
-                ) {
+                    user.id,
 
-                    setStoredPunishment(
+                    keys,
 
-                        user.id,
+                    {
+                        expiresAt,
 
-                        key,
+                        reason,
 
-                        {
-                            expiresAt,
+                        moderatorId:
+                            interaction.user.id,
 
-                            reason,
+                        dm,
 
-                            moderatorId:
-                                interaction.user.id,
+                        createdAt:
+                            Date.now(),
 
-                            dm,
+                        source:
+                            "command",
 
-                            createdAt:
-                                Date.now(),
+                        batchId:
+                            interaction.id,
 
-                            source:
-                                "command"
-                        }
-                    );
-                }
+                        batchLabel:
+                            typeName,
+
+                        batchKeys:
+                            keys
+                    }
+                );
 
                 const refreshedMember =
                     await interaction
@@ -3400,7 +3827,6 @@ if (
 
                                 expiresAt
                             );
-
                         }
 
                         else {
@@ -3420,7 +3846,6 @@ if (
                                 expiresAt
                             );
                         }
-
                     }
 
                     catch {
@@ -3446,38 +3871,38 @@ if (
                             `was given **${typeName}**.`
                         );
 
-    const publicResult =
-    await sendPublicResult(
+                const publicResult =
+                    await sendPublicResult(
 
-        interaction,
+                        interaction,
 
-        user,
+                        user,
 
-        publicText,
+                        publicText,
 
-        reason,
+                        reason,
 
-        expiresAt
-    );
+                        expiresAt
+                    );
 
-if (
-    expiresAt
-) {
+                if (
+                    expiresAt
+                ) {
 
-    attachPublicMessageToPunishments(
+                    attachPublicMessageToPunishments(
 
-        user.id,
+                        user.id,
 
-        keys,
+                        keys,
 
-        publicResult.message,
+                        publicResult.message,
 
-        publicResult.expiredDescription
-    );
-}
+                        publicResult.expiredDescription
+                    );
+                }
 
-await interaction.deleteReply()
-    .catch(() => {});
+                await interaction.deleteReply()
+                    .catch(() => {});
 
                 // ========================================
                 // ADMIN ROOM
@@ -3505,6 +3930,19 @@ await interaction.deleteReply()
                     dmStatus,
 
                     expiresAt,
+
+                    roles:
+
+                        keys.length >
+                        1
+
+                            ? keys.map(
+                                key =>
+                                    `• ${PUNISHMENTS[key].label} ` +
+                                    `(<@&${PUNISHMENTS[key].roleId}>)`
+                            )
+
+                            : null,
 
                     extra:
 
@@ -3554,22 +3992,11 @@ await interaction.deleteReply()
             let removedRole =
                 false;
 
-            for (
-                const key
-                of keys
-            ) {
-
-                removedStored =
-
-                    deleteStoredPunishment(
-                        user.id,
-                        key
-                    )
-
-                    ||
-
-                    removedStored;
-            }
+            removedStored =
+                deleteStoredPunishments(
+                    user.id,
+                    keys
+                );
 
             if (
                 member
@@ -3689,7 +4116,6 @@ await interaction.deleteReply()
 
                             reason
                         );
-
                     }
 
                     else {
@@ -3707,7 +4133,6 @@ await interaction.deleteReply()
                             reason
                         );
                     }
-
                 }
 
                 catch {
@@ -3779,6 +4204,19 @@ await interaction.deleteReply()
                 showLength:
                     false,
 
+                roles:
+
+                    keys.length >
+                    1
+
+                        ? keys.map(
+                            key =>
+                                `• ${PUNISHMENTS[key].label} ` +
+                                `(<@&${PUNISHMENTS[key].roleId}>)`
+                        )
+
+                        : null,
+
                 extra:
 
                     member
@@ -3812,7 +4250,6 @@ await interaction.deleteReply()
 
                 `DM: ${dmStatus}`
             );
-
         }
 
         catch (error) {
@@ -3835,7 +4272,6 @@ await interaction.deleteReply()
                     embeds:
                         []
                 });
-
             }
 
             catch {
@@ -3845,6 +4281,164 @@ await interaction.deleteReply()
         }
     }
 );
+
+// ========================================
+// EXPIRY GROUP HELPERS
+// ========================================
+
+function getExpiryGroupId(
+    key,
+    record
+) {
+
+    if (
+        record?.batchId
+    ) {
+
+        return (
+            `batch:${record.batchId}`
+        );
+    }
+
+    // Backward compatibility for timed multi-role
+    // punishments made before batchId existed.
+    if (
+        record?.publicMessageId
+    ) {
+
+        return (
+            `message:${record.publicMessageId}`
+        );
+    }
+
+    return (
+        `single:${key}`
+    );
+}
+
+function getGroupedPunishmentLabel(
+    items
+) {
+
+    const explicitLabel =
+        items
+            .map(
+                item =>
+                    item.record
+                        ?.batchLabel
+            )
+            .find(
+                Boolean
+            );
+
+    if (
+        explicitLabel
+    ) {
+
+        return explicitLabel;
+    }
+
+    const keys =
+        items.map(
+            item =>
+                item.key
+        );
+
+    const keySet =
+        new Set(
+            keys
+        );
+
+    const fullBlacklistKeys = [
+        "complex_blacklist",
+        "tov_blacklist",
+        "pslh_blacklist",
+        "forums_blacklist"
+    ];
+
+    if (
+        keys.length ===
+        fullBlacklistKeys.length
+        &&
+        fullBlacklistKeys.every(
+            key =>
+                keySet.has(
+                    key
+                )
+        )
+    ) {
+
+        return "Full Blacklist";
+    }
+
+    if (
+        keys.length ===
+        2
+        &&
+        keySet.has(
+            "image_banishment"
+        )
+        &&
+        keySet.has(
+            "embed_banishment"
+        )
+    ) {
+
+        return "Image + Embed";
+    }
+
+    if (
+        items.length ===
+        1
+    ) {
+
+        return (
+            items[0]
+                .punishment
+                .label
+        );
+    }
+
+    return items
+        .map(
+            item =>
+                item
+                    .punishment
+                    .label
+        )
+        .join(
+            " + "
+        );
+}
+
+function getGroupedPunishmentCategory(
+    items
+) {
+
+    const categories =
+        new Set(
+            items.map(
+                item =>
+                    item
+                        .punishment
+                        .category
+            )
+        );
+
+    if (
+        categories.size ===
+        1
+    ) {
+
+        return (
+            items[0]
+                .punishment
+                .category
+        );
+    }
+
+    return "punishment";
+}
 
 // ========================================
 // EXPIRATION PROCESSOR
@@ -3896,30 +4490,39 @@ async function processExpiredPunishments() {
                 continue;
             }
 
-            const expiredKeys =
+            const expiredItems =
                 Object.entries(
                     entry.punishments
                 )
 
                     .filter(
-
                         (
-                            [, record]
+                            [key, record]
                         ) =>
-
-                            record.expiresAt &&
-
+                            PUNISHMENTS[key]
+                            &&
+                            record.expiresAt
+                            &&
                             record.expiresAt <=
                             now
                     )
 
                     .map(
-                        ([key]) =>
-                            key
+                        (
+                            [key, record]
+                        ) => ({
+
+                            key,
+                            record,
+                            punishment:
+                                PUNISHMENTS[
+                                    key
+                                ]
+                        })
                     );
 
             if (
-                expiredKeys.length ===
+                expiredItems.length ===
                 0
             ) {
 
@@ -3955,60 +4558,106 @@ async function processExpiredPunishments() {
                         );
             }
 
+            const groups =
+                new Map();
+
             for (
-                const key
-                of expiredKeys
+                const item
+                of expiredItems
             ) {
 
-                const punishment =
-                    PUNISHMENTS[
-                        key
-                    ];
-
-                const record =
-                    getStoredPunishment(
-                        userId,
-                        key
+                const groupId =
+                    getExpiryGroupId(
+                        item.key,
+                        item.record
                     );
 
                 if (
-                    !punishment ||
-                    !record
+                    !groups.has(
+                        groupId
+                    )
                 ) {
 
-                    continue;
+                    groups.set(
+                        groupId,
+                        []
+                    );
                 }
 
+                groups
+                    .get(
+                        groupId
+                    )
+                    .push(
+                        item
+                    );
+            }
+
+            for (
+                const items
+                of groups.values()
+            ) {
+
+                const keys =
+                    items.map(
+                        item =>
+                            item.key
+                    );
+
+                const batchLabel =
+                    getGroupedPunishmentLabel(
+                        items
+                    );
+
+                const category =
+                    getGroupedPunishmentCategory(
+                        items
+                    );
+
+                const roleIdsToRemove =
+                    member
+
+                        ? items
+                            .map(
+                                item =>
+                                    item
+                                        .punishment
+                                        .roleId
+                            )
+                            .filter(
+                                roleId =>
+                                    member
+                                        .roles
+                                        .cache
+                                        .has(
+                                            roleId
+                                        )
+                            )
+
+                        : [];
+
                 // ========================================
-                // REMOVE ROLE
+                // REMOVE ALL EXPIRED ROLES AT ONCE
                 // ========================================
 
                 if (
-                    member &&
-
-                    member.roles.cache.has(
-                        punishment.roleId
-                    )
+                    roleIdsToRemove.length >
+                    0
                 ) {
 
                     try {
 
                         suppressRoleChanges(
-
                             userId,
-
-                            [
-                                punishment.roleId
-                            ]
+                            roleIdsToRemove
                         );
 
                         await member.roles.remove(
 
-                            punishment.roleId,
+                            roleIdsToRemove,
 
-                            `${punishment.label} expired automatically`
+                            `${batchLabel} expired automatically`
                         );
-
                     }
 
                     catch (error) {
@@ -4016,47 +4665,48 @@ async function processExpiredPunishments() {
                         console.error(
 
                             `[EXPIRY ROLE ERROR] ` +
-
                             `${userId} | ` +
-
-                            `${punishment.label}`
+                            `${batchLabel}`
                         );
 
                         console.error(
                             error
                         );
 
+                        // Keep persistence so next sweep retries.
                         continue;
                     }
                 }
 
                 // ========================================
-                // CHANGE ORIGINAL MESSAGE TO EXPIRED
+                // CHANGE ORIGINAL MESSAGE ONCE
                 // ========================================
+
+                const representativeRecord =
+                    items[0]
+                        .record;
 
                 await markPublicMessageExpired(
-                    record
+                    representativeRecord
                 );
 
                 // ========================================
-                // REMOVE FROM STORAGE
+                // REMOVE WHOLE BATCH FROM STORAGE
                 // ========================================
 
-                deleteStoredPunishment(
+                deleteStoredPunishments(
                     userId,
-                    key
+                    keys
                 );
 
                 // ========================================
-                // RESTORE MEDIA ACCESS IF NEEDED
+                // RESTORE ACCESS ONCE IF NEEDED
                 // ========================================
 
                 if (
-                    punishment.category ===
+                    category ===
                     "banishment"
-
                     &&
-
                     member
                 ) {
 
@@ -4073,33 +4723,31 @@ async function processExpiredPunishments() {
                 }
 
                 // ========================================
-                // EXPIRATION DM
+                // ONE EXPIRATION DM PER BATCH
                 // ========================================
 
                 let dmStatus =
 
-                    record.dm
+                    representativeRecord.dm
 
                         ? "Sent"
 
                         : "Disabled by moderator";
 
                 if (
-                    record.dm &&
+                    representativeRecord.dm &&
                     user
                 ) {
 
                     try {
 
-                        await sendExpiryDM(
+                        await sendGroupedExpiryDM(
 
                             user,
-
                             guild.name,
-
-                            punishment
+                            batchLabel,
+                            category
                         );
-
                     }
 
                     catch {
@@ -4110,7 +4758,7 @@ async function processExpiredPunishments() {
                 }
 
                 // ========================================
-                // ADMIN LOG
+                // ONE ADMIN LOG PER BATCH
                 // ========================================
 
                 if (
@@ -4121,31 +4769,50 @@ async function processExpiredPunishments() {
 
                         title:
 
-                            punishment.category ===
+                            category ===
                             "banishment"
 
                                 ? "Banishment Expired"
 
-                                : "Blacklist Expired",
+                                : (
+                                    category ===
+                                    "blacklist"
+
+                                        ? "Blacklist Expired"
+
+                                        : "Punishment Expired"
+                                ),
 
                         user,
 
                         typeName:
-                            punishment.label,
+                            batchLabel,
 
                         moderator:
                             null,
 
                         reason:
 
-                            record.reason ||
-
+                            representativeRecord.reason ||
                             "Timed punishment expired.",
 
                         dmStatus,
 
                         expiresAt:
-                            record.expiresAt,
+                            representativeRecord.expiresAt,
+
+                        roles:
+
+                            items.length >
+                            1
+
+                                ? items.map(
+                                    item =>
+                                        `• ${item.punishment.label} ` +
+                                        `(<@&${item.punishment.roleId}>)`
+                                )
+
+                                : null,
 
                         extra:
                             "Automatically removed because the configured length expired."
@@ -4155,14 +4822,12 @@ async function processExpiredPunishments() {
                 console.log(
 
                     `[EXPIRED] ` +
-
                     `${userId} | ` +
-
-                    `${punishment.label}`
+                    `${batchLabel} | ` +
+                    `${items.length} punishment record(s)`
                 );
             }
         }
-
     }
 
     finally {
@@ -4175,8 +4840,6 @@ async function processExpiredPunishments() {
 // ========================================
 // EXPIRATION TIMER
 // ========================================
-
-// Check every 30 seconds.
 
 setInterval(
 
@@ -4291,10 +4954,9 @@ client.once(
                 "✓ /unblacklist registered"
             );
 
-	console.log(
-   	 `✓ Chat Moderator commands enabled for role ${CHAT_MODERATOR_ROLE_ID}`
-	);
-
+            console.log(
+                `✓ Chat Moderator commands enabled for role ${CHAT_MODERATOR_ROLE_ID}`
+            );
         }
 
         catch (error) {
@@ -4351,7 +5013,6 @@ client.once(
             console.log(
                 `ONLY managing user: ${TEST_USER_ID}`
             );
-
         }
 
         else {
@@ -4395,6 +5056,18 @@ client.once(
 
         console.log(
             "✓ Admin Room moderation logs"
+        );
+
+        console.log(
+            "✓ Multi-role punishment batching"
+        );
+
+        console.log(
+            "✓ Grouped Full Blacklist / IMG_IMBED expiry"
+        );
+
+        console.log(
+            "✓ Grouped manual punishment-role logs"
         );
 
         console.log(
