@@ -40,9 +40,11 @@ const GOVERNMENT_INVESTORS_ROLE_ID = "949331181911023666";
 
 const IMAGE_PERM_ROLE_ID = "1538980733908033637";
 const EMBED_PERM_ROLE_ID = "1538990659120402512";
+const REACTION_ACCESS_ROLE_ID = "1544517981563002983";
 
 const IMAGE_BANISHMENT_ROLE_ID = "1538990908928819270";
 const EMBED_BANISHMENT_ROLE_ID = "1514388508125560853";
+const REACTION_BANISHMENT_ROLE_ID = "1544518388829659178";
 
 const COMPLEX_BLACKLIST_ROLE_ID = "1279268982632874087";
 const TOV_BLACKLIST_ROLE_ID = "1540169411250487406";
@@ -74,6 +76,12 @@ const PUNISHMENTS = {
         category: "banishment",
         label: "Embed Banishment"
     },
+
+reaction_banishment: {
+    roleId: REACTION_BANISHMENT_ROLE_ID,
+    category: "banishment",
+    label: "Reaction Banishment"
+},
 
     complex_blacklist: {
         roleId: COMPLEX_BLACKLIST_ROLE_ID,
@@ -1372,6 +1380,11 @@ const BANISHMENT_CHOICES = [
     {
         name: "IMG_IMBED",
         value: "both"
+    },
+
+    {
+        name: "REACTIONS",
+        value: "reactions"
     }
 ];
 
@@ -1710,6 +1723,15 @@ function getBanishmentKeys(
         ];
     }
 
+    if (
+        type === "reactions"
+    ) {
+
+        return [
+            "reaction_banishment"
+        ];
+    }
+
     return [];
 }
 
@@ -1790,6 +1812,12 @@ function getBanishmentName(
         return "Image + Embed";
     }
 
+    if (
+        type === "reactions"
+    ) {
+        return "Reaction";
+    }
+
     return "Unknown";
 }
 
@@ -1819,6 +1847,13 @@ function getBanishmentDescription(
             "uploading images/files and " +
             "sending embedded links"
         );
+    }
+
+    if (
+        type === "reactions"
+    ) {
+
+        return "adding reactions to messages";
     }
 
     return (
@@ -1929,6 +1964,11 @@ async function syncPermissions(
                 EMBED_BANISHMENT_ROLE_ID
             );
 
+const hasReactionBanishment =
+    member.roles.cache.has(
+        REACTION_BANISHMENT_ROLE_ID
+    );
+
         const hasImagePerm =
             member.roles.cache.has(
                 IMAGE_PERM_ROLE_ID
@@ -1939,6 +1979,11 @@ async function syncPermissions(
                 EMBED_PERM_ROLE_ID
             );
 
+const hasReactionAccess =
+    member.roles.cache.has(
+        REACTION_ACCESS_ROLE_ID
+    );
+
         const shouldHaveImagePerm =
             qualifies &&
             !hasImageBanishment;
@@ -1946,6 +1991,11 @@ async function syncPermissions(
         const shouldHaveEmbedPerm =
             qualifies &&
             !hasEmbedBanishment;
+
+// Everyone qualifies for Reaction Access.
+// Reaction Banishment is the only thing that blocks it.
+const shouldHaveReactionAccess =
+    !hasReactionBanishment;
 
         // ========================================
         // IMAGE ACCESS
@@ -2006,7 +2056,7 @@ async function syncPermissions(
             );
         }
 
-        else if (
+               else if (
             !shouldHaveEmbedPerm &&
             hasEmbedPerm
         ) {
@@ -2024,6 +2074,42 @@ async function syncPermissions(
 
             console.log(
                 `[EMBED REMOVE] ${member.user.tag} (${member.id})`
+            );
+        }
+
+        // ========================================
+        // REACTION ACCESS
+        // ========================================
+
+        if (
+            shouldHaveReactionAccess &&
+            !hasReactionAccess
+        ) {
+
+            await member.roles.add(
+                REACTION_ACCESS_ROLE_ID,
+                "Automatically granted Reaction Access"
+            );
+
+            console.log(
+                `[REACTION ADD] ${member.user.tag} (${member.id})`
+            );
+        }
+
+        else if (
+            !shouldHaveReactionAccess &&
+            hasReactionAccess
+        ) {
+
+            await member.roles.remove(
+
+                REACTION_ACCESS_ROLE_ID,
+
+                "Reaction Banishment active"
+            );
+
+            console.log(
+                `[REACTION REMOVE] ${member.user.tag} (${member.id})`
             );
         }
 
@@ -2294,7 +2380,7 @@ async function sendBanishmentRemoveDM(
 
     await user.send(
 
-        `Your **${typeName} Blacklist** has been removed in **${guildName}**.\n\n` +
+       `Your **${typeName} Banishment** has been removed in **${guildName}**.\n\n` +
 
         `**Reason:** ${reason}`
     );
@@ -2877,20 +2963,24 @@ client.on(
         // ACCESS ROLE SYSTEM
         // ========================================
 
-        const watchedRoles = [
+    const watchedRoles = [
 
-            RANK_III_ROLE_ID,
+    RANK_III_ROLE_ID,
 
-            GOVERNMENT_INVESTORS_ROLE_ID,
+    GOVERNMENT_INVESTORS_ROLE_ID,
 
-            IMAGE_PERM_ROLE_ID,
+    IMAGE_PERM_ROLE_ID,
 
-            EMBED_PERM_ROLE_ID,
+    EMBED_PERM_ROLE_ID,
 
-            IMAGE_BANISHMENT_ROLE_ID,
+    REACTION_ACCESS_ROLE_ID,
 
-            EMBED_BANISHMENT_ROLE_ID
-        ];
+    IMAGE_BANISHMENT_ROLE_ID,
+
+    EMBED_BANISHMENT_ROLE_ID,
+
+    REACTION_BANISHMENT_ROLE_ID
+];
 
         const relevantRoleChanged =
             watchedRoles.some(
