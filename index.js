@@ -7,6 +7,10 @@ const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     MessageFlags,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ComponentType,
     EmbedBuilder
 } = require("discord.js");
 
@@ -138,6 +142,15 @@ const PUNISHMENT_FILE =
         DATA_DIR,
         "banishments.json"
     );
+
+const MODLOG_FILE =
+    path.join(
+        DATA_DIR,
+        "modlogs.json"
+    );
+
+const MODLOGS_PER_PAGE =
+    4;
 
 function makeEmptyStore() {
 
@@ -298,6 +311,618 @@ function loadPunishmentStore() {
 
 const punishmentStore =
     loadPunishmentStore();
+
+
+
+// ========================================
+// MODLOG PERSISTENCE + DISPLAY
+// ========================================
+
+function makeEmptyModlogStore() {
+
+    return {
+        version: 1,
+        nextCase: 1,
+        cases: []
+    };
+}
+
+function loadModlogStore() {
+
+    try {
+
+        if (
+            !fs.existsSync(
+                MODLOG_FILE
+            )
+        ) {
+
+            return makeEmptyModlogStore();
+        }
+
+        const raw =
+            fs.readFileSync(
+                MODLOG_FILE,
+                "utf8"
+            );
+
+        if (
+            !raw.trim()
+        ) {
+
+            return makeEmptyModlogStore();
+        }
+
+        const parsed =
+            JSON.parse(
+                raw
+            );
+
+        if (
+            !parsed ||
+            typeof parsed !==
+            "object"
+        ) {
+
+            return makeEmptyModlogStore();
+        }
+
+        if (
+            !Array.isArray(
+                parsed.cases
+            )
+        ) {
+
+            parsed.cases =
+                [];
+        }
+
+        if (
+            !Number.isInteger(
+                parsed.nextCase
+            )
+            ||
+            parsed.nextCase <
+            1
+        ) {
+
+            const highestCase =
+                parsed.cases.reduce(
+                    (
+                        highest,
+                        entry
+                    ) =>
+                        Math.max(
+                            highest,
+                            Number(
+                                entry?.caseNumber
+                            ) || 0
+                        ),
+                    0
+                );
+
+            parsed.nextCase =
+                highestCase +
+                1;
+        }
+
+        parsed.version =
+            1;
+
+        return parsed;
+    }
+
+    catch (error) {
+
+        console.error(
+            "[MODLOGS] Failed to load modlogs.json"
+        );
+
+        console.error(
+            error
+        );
+
+        return makeEmptyModlogStore();
+    }
+}
+
+const modlogStore =
+    loadModlogStore();
+
+function saveModlogStore() {
+
+    try {
+
+        fs.mkdirSync(
+            DATA_DIR,
+            {
+                recursive: true
+            }
+        );
+
+        fs.writeFileSync(
+            MODLOG_FILE,
+
+            JSON.stringify(
+                modlogStore,
+                null,
+                4
+            ),
+
+            "utf8"
+        );
+    }
+
+    catch (error) {
+
+        console.error(
+            "[MODLOGS] Failed to save modlogs.json"
+        );
+
+        console.error(
+            error
+        );
+    }
+}
+
+function addModlogCase({
+
+    user,
+    userId,
+    action,
+    moderator,
+    moderatorId,
+    reason,
+    lengthText = null,
+    commandName = null,
+    source = "command",
+    createdAt = Date.now()
+
+}) {
+
+    const targetId =
+        user?.id ??
+        userId;
+
+    if (
+        !targetId
+    ) {
+
+        return null;
+    }
+
+    const record = {
+
+        caseNumber:
+            modlogStore.nextCase++,
+
+        userId:
+            targetId,
+
+        username:
+            user?.username ??
+            null,
+
+        action:
+            action ||
+            "Moderation Action",
+
+        moderatorId:
+            moderator?.id ??
+            moderatorId ??
+            null,
+
+        moderatorName:
+            moderator?.username ??
+            null,
+
+        reason:
+            reason ||
+            "No reason provided.",
+
+        lengthText,
+
+        commandName,
+
+        source,
+
+        createdAt
+    };
+
+    modlogStore.cases.push(
+        record
+    );
+
+    saveModlogStore();
+
+    console.log(
+        `[MODLOG CASE ${record.caseNumber}] ` +
+        `${record.userId} | ` +
+        `${record.action}`
+    );
+
+    return record;
+}
+
+function getUserModlogs(
+    userId
+) {
+
+    return modlogStore
+        .cases
+        .filter(
+            entry =>
+                entry.userId ===
+                userId
+        )
+        .sort(
+            (
+                a,
+                b
+            ) =>
+                (
+                    Number(
+                        b.caseNumber
+                    ) || 0
+                )
+                -
+                (
+                    Number(
+                        a.caseNumber
+                    ) || 0
+                )
+        );
+}
+
+// ========================================
+// DYNO-STYLE MODLOG DISPLAY
+// ========================================
+
+function buildModlogsPage(
+    user,
+    logs,
+    requestedPage
+) {
+
+    const totalPages =
+        Math.max(
+            1,
+            Math.ceil(
+                logs.length /
+                MODLOGS_PER_PAGE
+            )
+        );
+
+    const page =
+        Math.min(
+            Math.max(
+                requestedPage,
+                1
+            ),
+            totalPages
+        );
+
+    const startIndex =
+        (
+            page -
+            1
+        ) *
+        MODLOGS_PER_PAGE;
+
+    const pageLogs =
+        logs.slice(
+            startIndex,
+            startIndex +
+            MODLOGS_PER_PAGE
+        );
+
+    const sections =
+        pageLogs.map(
+            entry => {
+
+                const moderatorText =
+                    entry.moderatorId
+
+                        ? `<@${entry.moderatorId}>`
+
+                        : "Automatic / External";
+
+                const timestamp =
+                    Math.floor(
+                        (
+                            Number(
+                                entry.createdAt
+                            ) ||
+                            Date.now()
+                        ) /
+                        1000
+                    );
+
+                const lines = [
+
+                    `**Case ${entry.caseNumber} — ${entry.action}**`,
+
+                    `**Mod:** ${moderatorText}`
+                ];
+
+                if (
+                    entry.lengthText
+                ) {
+
+                    lines.push(
+                        `**Length:** ${entry.lengthText}`
+                    );
+                }
+
+                lines.push(
+                    `**Reason:** ${entry.reason || "No reason provided."}`
+                );
+
+                lines.push(
+                    `<t:${timestamp}:F>`
+                );
+
+                return lines.join(
+                    "\n"
+                );
+            }
+        );
+
+    const description =
+        [
+            `\`${user.id}\``,
+            "",
+            sections.length >
+            0
+                ? sections.join(
+                    "\n\n──────────────\n\n"
+                )
+                : "No moderation logs have been recorded for this user yet."
+        ]
+            .join(
+                "\n"
+            );
+
+    const embed =
+        new EmbedBuilder()
+
+            .setTitle(
+                `Modlogs for ${user.username}`
+            )
+
+            .setDescription(
+                description
+            )
+
+            .setColor(
+                0x3498DB
+            )
+
+            .setFooter({
+                text:
+                    `Page ${page}/${totalPages} ` +
+                    `(${logs.length} log${logs.length === 1 ? "" : "s"})`
+            });
+
+    const row =
+        new ActionRowBuilder()
+            .addComponents(
+
+                new ButtonBuilder()
+
+                    .setCustomId(
+                        "modlogs_previous"
+                    )
+
+                    .setLabel(
+                        "Previous"
+                    )
+
+                    .setStyle(
+                        ButtonStyle.Secondary
+                    )
+
+                    .setDisabled(
+                        page <=
+                        1
+                    ),
+
+                new ButtonBuilder()
+
+                    .setCustomId(
+                        "modlogs_next"
+                    )
+
+                    .setLabel(
+                        "Next"
+                    )
+
+                    .setStyle(
+                        ButtonStyle.Secondary
+                    )
+
+                    .setDisabled(
+                        page >=
+                        totalPages
+                    )
+            );
+
+    return {
+        embed,
+        row,
+        page,
+        totalPages
+    };
+}
+
+async function handleModlogsCommand(
+    interaction
+) {
+
+    const user =
+        interaction.options.getUser(
+            "user",
+            true
+        );
+
+    const requestedPage =
+        interaction.options.getInteger(
+            "page"
+        )
+        ??
+        1;
+
+    const logs =
+        getUserModlogs(
+            user.id
+        );
+
+    let current =
+        buildModlogsPage(
+            user,
+            logs,
+            requestedPage
+        );
+
+    await interaction.reply({
+
+        content:
+            `⚡ **${interaction.user.username}** used \`/modlogs\``,
+
+        embeds: [
+            current.embed
+        ],
+
+        components:
+            current.totalPages >
+            1
+                ? [
+                    current.row
+                ]
+                : [],
+
+        allowedMentions: {
+            parse: []
+        }
+    });
+
+    if (
+        current.totalPages <=
+        1
+    ) {
+
+        return;
+    }
+
+    const message =
+        await interaction.fetchReply();
+
+    const collector =
+        message.createMessageComponentCollector({
+
+            componentType:
+                ComponentType.Button,
+
+            time:
+                120000
+        });
+
+    collector.on(
+        "collect",
+        async buttonInteraction => {
+
+            if (
+                buttonInteraction.user.id !==
+                interaction.user.id
+            ) {
+
+                await buttonInteraction.reply({
+
+                    content:
+                        "❌ Only the moderator who opened these modlogs can change the page.",
+
+                    flags:
+                        MessageFlags.Ephemeral
+                });
+
+                return;
+            }
+
+            let newPage =
+                current.page;
+
+            if (
+                buttonInteraction.customId ===
+                "modlogs_previous"
+            ) {
+
+                newPage--;
+            }
+
+            else if (
+                buttonInteraction.customId ===
+                "modlogs_next"
+            ) {
+
+                newPage++;
+            }
+
+            current =
+                buildModlogsPage(
+                    user,
+                    logs,
+                    newPage
+                );
+
+            await buttonInteraction.update({
+
+                embeds: [
+                    current.embed
+                ],
+
+                components: [
+                    current.row
+                ]
+            });
+        }
+    );
+
+    collector.on(
+        "end",
+        async () => {
+
+            try {
+
+                const disabledRow =
+                    new ActionRowBuilder()
+                        .addComponents(
+                            ...current.row.components.map(
+                                component =>
+                                    ButtonBuilder
+                                        .from(
+                                            component
+                                        )
+                                        .setDisabled(
+                                            true
+                                        )
+                            )
+                        );
+
+                await message.edit({
+
+                    components: [
+                        disabledRow
+                    ]
+                });
+            }
+
+            catch {
+
+                // Message may have been deleted.
+            }
+        }
+    );
+}
 
 function savePunishmentStore() {
 
@@ -1681,8 +2306,58 @@ const commands = [
                 "Remove a server blacklist role"
             ),
 
-        BLACKLIST_CHOICES
+              BLACKLIST_CHOICES
     )
+
+        .toJSON(),
+
+    new SlashCommandBuilder()
+
+        .setName(
+            "modlogs"
+        )
+
+        .setDescription(
+            "View this bot's moderation history for a user"
+        )
+
+        .addUserOption(
+            option =>
+                option
+
+                    .setName(
+                        "user"
+                    )
+
+                    .setDescription(
+                        "User whose moderation logs you want to view"
+                    )
+
+                    .setRequired(
+                        true
+                    )
+        )
+
+        .addIntegerOption(
+            option =>
+                option
+
+                    .setName(
+                        "page"
+                    )
+
+                    .setDescription(
+                        "Page to open"
+                    )
+
+                    .setMinValue(
+                        1
+                    )
+
+                    .setRequired(
+                        false
+                    )
+        )
 
         .toJSON()
 ];
@@ -2551,6 +3226,7 @@ async function sendPublicResult(
         await channel.send({
 
             content:
+                `⚡ **${interaction.user.username}** used \`/${interaction.commandName}\`\n` +
                 `<@${user.id}>`,
 
             embeds: [
@@ -3432,11 +4108,12 @@ client.on(
             interaction.commandName;
 
         if (
-            ![
+                     ![
                 "banishment",
                 "unbanishment",
                 "blacklist",
-                "unblacklist"
+                "unblacklist",
+                "modlogs"
             ].includes(
                 commandName
             )
@@ -3480,6 +4157,22 @@ client.on(
                 flags:
                     MessageFlags.Ephemeral
             });
+
+            return;
+        }
+
+        // ========================================
+        // MODLOGS COMMAND
+        // ========================================
+
+        if (
+            commandName ===
+            "modlogs"
+        ) {
+
+            await handleModlogsCommand(
+                interaction
+            );
 
             return;
         }
@@ -3946,6 +4639,41 @@ client.on(
                 }
 
                 // ========================================
+                // SAVE MODLOG CASE
+                // ========================================
+
+                addModlogCase({
+
+                    user,
+
+                    action:
+                        isBanishment
+
+                            ? `${typeName} Banishment`
+
+                            : typeName,
+
+                    moderator:
+                        interaction.user,
+
+                    reason,
+
+                    lengthText:
+                        durationResult.permanent
+
+                            ? "Permanent"
+
+                            : formatDuration(
+                                durationResult.ms
+                            ),
+
+                    commandName,
+
+                    source:
+                        "command"
+                });
+
+                // ========================================
                 // PUBLIC RESPONSE
                 // ========================================
 
@@ -4231,6 +4959,32 @@ client.on(
                         "Failed — user may have DMs disabled";
                 }
             }
+
+            // ========================================
+            // SAVE MODLOG CASE
+            // ========================================
+
+            addModlogCase({
+
+                user,
+
+                action:
+                    isBanishment
+
+                        ? `${typeName} Banishment Removed`
+
+                        : `${typeName} Removed`,
+
+                moderator:
+                    interaction.user,
+
+                reason,
+
+                commandName,
+
+                source:
+                    "command"
+            });
 
             // ========================================
             // PUBLIC RESPONSE
@@ -4906,6 +5660,33 @@ async function processExpiredPunishments() {
 
                         extra:
                             "Automatically removed because the configured length expired."
+                    });
+
+                    addModlogCase({
+
+                        user,
+
+                        action:
+
+                            category ===
+                            "banishment"
+
+                                ? `${batchLabel} Banishment Expired`
+
+                                : `${batchLabel} Expired`,
+
+                        moderatorId:
+                            null,
+
+                        reason:
+                            representativeRecord.reason ||
+                            "Timed punishment expired automatically.",
+
+                        commandName:
+                            null,
+
+                        source:
+                            "expiry"
                     });
                 }
 
